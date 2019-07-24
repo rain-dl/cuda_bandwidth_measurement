@@ -6,7 +6,6 @@
 #include <vector>
 #include <random>
 #include <algorithm>
-#include <chrono>
 
 auto measure_host_to_device_memcopy_mb(const int n, const bool enable_async)
 {
@@ -19,27 +18,38 @@ auto measure_host_to_device_memcopy_mb(const int n, const bool enable_async)
 	int *device;
 	cudaMalloc((void **)&device, size);
 
-	std::chrono::time_point<std::chrono::system_clock> start, end;
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+
 
 	if(!enable_async)
 	{
-		start=std::chrono::system_clock::now();
+		cudaEventRecord(start);
 		cudaMemcpy(device, host, size, cudaMemcpyHostToDevice);
 		cudaMemcpy(host, device, size, cudaMemcpyDeviceToHost);
-		end=std::chrono::system_clock::now();
+		cudaEventRecord(stop);
 	}
 	else
 	{
-		start=std::chrono::system_clock::now();
+		cudaEventRecord(start);
 		cudaMemcpyAsync(device, host, size, cudaMemcpyHostToDevice);
 		cudaMemcpyAsync(host, device, size, cudaMemcpyDeviceToHost);
-		end=std::chrono::system_clock::now();
+		cudaEventRecord(stop);
 	}
+
+	cudaEventSynchronize(stop);
 
 	cudaFreeHost(host);
 	cudaFree(device);
 
-	return end-start;
+	float time=0;
+	cudaEventElapsedTime(&time, start, stop);
+
+	cudaEventDestroy(start);
+	cudaEventDestroy(stop);
+
+	return time;
 }
 
 
@@ -47,16 +57,16 @@ int main()
 {
 	for(const auto n :{16, 32, 64, 128, 256, 512, 1024, 2048})
 	{
-		int sum=0;
+		float sum=0;
 
 		for(int i=0; i<5; ++i)
 		{
-			const auto time=std::chrono::duration_cast<std::chrono::microseconds>(measure_host_to_device_memcopy_mb(n, false)).count();
+			const auto time=measure_host_to_device_memcopy_mb(n, false);
 			std::cout<<"@sync_copy size: "<<n<<"MB, time="<<time<<std::endl;
 			sum+=time;
 		}
 
-		std::cout<<"avg="<<sum/5<<std::endl;
+		std::cout<<"avg="<<sum/5<<"s"<<std::endl;
 	}
 
 	return 0;
