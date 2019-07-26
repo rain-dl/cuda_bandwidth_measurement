@@ -1,50 +1,127 @@
-﻿
+﻿#include <iostream>
+
+#include "cuda.h"
 #include "cuda_runtime.h"
+#include "device_functions.h"
 #include "device_launch_parameters.h"
 
-#include <iostream>
-#include <vector>
-#include <random>
-#include <algorithm>
-
-auto measure_host_to_device_memcopy_mb(const int n, const bool enable_async)
+namespace kernel
 {
-	constexpr long long mb=1<<20;
-	const int size=n*mb/(2*sizeof(int));
 
-	int *host;
-	cudaMallocHost((void **)&host, size);
-
-	int *device;
-	cudaMalloc((void **)&device, size);
-
-	cudaEvent_t start, stop;
-	cudaEventCreate(&start);
-	cudaEventCreate(&stop);
-
-
-	if(!enable_async)
+__global__ void measure_global_bandwidth_kb(int *device2, int *device1, int size)
+{
+	int r=0;
+	for(int i=0; i<size; ++i)
 	{
-		cudaEventRecord(start);
-		cudaMemcpy(device, host, size, cudaMemcpyHostToDevice);
-		cudaMemcpy(host, device, size, cudaMemcpyDeviceToHost);
-		cudaEventRecord(stop);
+		device2[i]+=device1[i];
+	}
+}
+
+}
+
+
+auto measure_host_device_bandwidth_mb(const int n, const bool enable_sync)
+{
+	const int bytes=n*(1<<20);
+
+	int *host, *device;
+	cudaMallocHost((void **)&host, bytes);
+	cudaMalloc((void **)&device, bytes);
+
+	cudaEvent_t hd_start, hd_stop, dh_start, dh_stop;
+	cudaEventCreate(&hd_start);
+	cudaEventCreate(&hd_stop);
+	cudaEventCreate(&dh_start);
+	cudaEventCreate(&dh_stop);
+
+	float hd_time, dh_time;
+
+	if(enable_sync)
+	{
+		cudaEventRecord(hd_start);
+		cudaMemcpy(device, host, bytes, cudaMemcpyHostToDevice);
+		cudaEventRecord(hd_stop);
+		cudaEventSynchronize(hd_stop);
+
+		cudaEventRecord(dh_start);
+		cudaMemcpy(host, device, bytes, cudaMemcpyDeviceToHost);
+		cudaEventRecord(dh_stop);
+		cudaEventSynchronize(dh_stop);
 	}
 	else
 	{
-		cudaEventRecord(start);
-		cudaMemcpyAsync(device, host, size, cudaMemcpyHostToDevice);
-		cudaMemcpyAsync(host, device, size, cudaMemcpyDeviceToHost);
-		cudaEventRecord(stop);
+		cudaEventRecord(hd_start);
+		cudaMemcpyAsync(device, host, bytes, cudaMemcpyHostToDevice);
+		cudaEventRecord(hd_stop);
+		cudaEventSynchronize(hd_stop);
+
+		cudaEventRecord(dh_start);
+		cudaMemcpyAsync(host, device, bytes, cudaMemcpyDeviceToHost);
+		cudaEventRecord(dh_stop);
+		cudaEventSynchronize(dh_stop);
 	}
 
-	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&hd_time, hd_start, hd_stop);
+	cudaEventElapsedTime(&dh_time, dh_start, dh_stop);
 
 	cudaFreeHost(host);
 	cudaFree(device);
 
-	float time=0;
+	cudaEventDestroy(hd_start);
+	cudaEventDestroy(hd_stop);
+	cudaEventDestroy(dh_start);
+	cudaEventDestroy(dh_stop);
+
+	return std::make_pair(hd_time, dh_time);
+}
+
+void measure_host_device_bandwidth(const bool enable_sync)
+{
+	const int repeat=10;
+	std::cout<<"host <-> device  "<<(enable_sync ? "sync" : "aysnc")<<std::endl;
+	std::cout<<"data size[MB], host to device[ms], device to host[ms]"<<std::endl;
+	for(int n=32; n<=256; n+=32)
+	{
+		float hd_sum=0, dh_sum=0;
+
+		for(int i=0; i<repeat; ++i)
+		{
+			const auto time=measure_host_device_bandwidth_mb(n, enable_sync);
+			hd_sum+=time.first;
+			dh_sum+=time.second;
+		}
+
+		std::cout<<n<<", "<<hd_sum/repeat<<", "<<dh_sum/repeat<<std::endl;
+	}
+	std::cout<<"--\n"<<std::endl;
+}
+
+auto measure_global_bandwidth_kb(const int n)
+{
+	const int bytes=n*(1<<10)/2;
+	
+	int *device1, *device2;
+	cudaMalloc((void **)&device1, bytes);
+	cudaMalloc((void **)&device2, bytes);
+
+	float time;
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+
+	dim3 grid(1);
+	dim3 threads(1);
+
+	cudaEventRecord(start);
+	kernel::measure_global_bandwidth_kb<<<grid, threads>>>(device2, device1, bytes/sizeof(int));
+	cudaEventRecord(stop);
+
+	cudaEventSynchronize(stop);
+
 	cudaEventElapsedTime(&time, start, stop);
+	
+	cudaFree(device1);
+	cudaFree(device2);
 
 	cudaEventDestroy(start);
 	cudaEventDestroy(stop);
@@ -52,23 +129,29 @@ auto measure_host_to_device_memcopy_mb(const int n, const bool enable_async)
 	return time;
 }
 
+void measure_global_bandwidth()
+{
+	const int repeat=10;
+	std::cout<<"global memory"<<std::endl;
+	std::cout<<"data size[KB], time[ms]"<<std::endl;
+	for(int n=32; n<=256; n+=32)
+	{
+		float sum=0;
+		for(int i=0; i<repeat; ++i)
+		{
+			sum+=measure_global_bandwidth_kb(n);
+		}
+
+		std::cout<<n<<", "<<sum/repeat<<std::endl;
+	}
+	std::cout<<"--\n"<<std::endl;
+}
 
 int main()
 {
-	for(const auto n :{16, 32, 64, 128, 256, 512, 1024, 2048})
-	{
-		float sum=0;
-
-		for(int i=0; i<5; ++i)
-		{
-			const auto time=measure_host_to_device_memcopy_mb(n, false);
-			std::cout<<"@sync_copy size: "<<n<<"MB, time="<<time<<std::endl;
-			sum+=time;
-		}
-
-		std::cout<<"avg="<<sum/5<<"s"<<std::endl;
-	}
-
+	measure_host_device_bandwidth(true);
+	measure_host_device_bandwidth(false);
+	measure_global_bandwidth();
 	return 0;
 }
 
