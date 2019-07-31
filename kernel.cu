@@ -2,19 +2,20 @@
 
 #include "cuda.h"
 #include "cuda_runtime.h"
-#include "device_functions.h"
+#include "cuda_runtime_api.h"
 #include "device_launch_parameters.h"
 
 namespace kernel
 {
 
-__global__ void measure_global_bandwidth_kb(int *device2, int *device1, int size)
+__global__ void measure_global_bandwidth_kb(int *out, int *device, int size)
 {
 	int r=0;
 	for(int i=0; i<size; ++i)
 	{
-		device2[i]+=device1[i];
+		r+=device[i];
 	}
+	*out=r;
 }
 
 }
@@ -100,9 +101,9 @@ auto measure_global_bandwidth_kb(const int n)
 {
 	const int bytes=n*(1<<10)/2;
 	
-	int *device1, *device2;
-	cudaMalloc((void **)&device1, bytes);
-	cudaMalloc((void **)&device2, bytes);
+	int *out, *device;
+	cudaMalloc((void **)&out, sizeof(int));
+	cudaMalloc((void **)&device, bytes);
 
 	float time;
 	cudaEvent_t start, stop;
@@ -113,15 +114,15 @@ auto measure_global_bandwidth_kb(const int n)
 	dim3 threads(1);
 
 	cudaEventRecord(start);
-	kernel::measure_global_bandwidth_kb<<<grid, threads>>>(device2, device1, bytes/sizeof(int));
+	kernel::measure_global_bandwidth_kb<<<grid, threads>>>(out, device, bytes/sizeof(int));
 	cudaEventRecord(stop);
 
 	cudaEventSynchronize(stop);
 
 	cudaEventElapsedTime(&time, start, stop);
 	
-	cudaFree(device1);
-	cudaFree(device2);
+	cudaFree(out);
+	cudaFree(device);
 
 	cudaEventDestroy(start);
 	cudaEventDestroy(stop);
