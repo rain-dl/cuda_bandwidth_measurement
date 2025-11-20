@@ -11,6 +11,8 @@
 #endif
 #ifdef _WIN32
 #include <Windows.h>
+#else
+#define _atoi64(val)     strtoll(val, NULL, 10)
 #endif
 
 namespace kernel
